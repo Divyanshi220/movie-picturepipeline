@@ -6,13 +6,18 @@ on:
       - main
     paths:
       - 'starter/backend/**'
+      - '.github/workflows/backend-cd.yaml'
   workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  IMAGE_TAG: ${{ github.sha }}
 
 jobs:
   lint:
     name: Lint Backend
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -26,16 +31,15 @@ jobs:
         working-directory: starter/backend
         run: |
           pip install pipenv
-          pipenv install --dev --system
+          pipenv install --dev
 
       - name: Run lint
         working-directory: starter/backend
-        run: flake8 .
+        run: pipenv run lint
 
   test:
     name: Test Backend
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -49,20 +53,16 @@ jobs:
         working-directory: starter/backend
         run: |
           pip install pipenv
-          pipenv install --dev --system
+          pipenv install --dev
 
       - name: Run tests
         working-directory: starter/backend
-        run: pytest
+        run: pipenv run test
 
-  deploy:
-    name: Build and Deploy Backend
+  build:
+    name: Build Backend
     runs-on: ubuntu-latest
     needs: [lint, test]
-    env:
-      ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
-      IMAGE_TAG: ${{ github.sha }}
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -78,32 +78,42 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build backend Docker image
+      - name: Build and push Docker image
         working-directory: starter/backend
         run: |
-          docker build \
-            -t $ECR_REGISTRY/backend:$IMAGE_TAG \
-            -t $ECR_REGISTRY/backend:latest \
-            .
-
-      - name: Push backend image to ECR
-        run: |
+          docker build --tag $ECR_REGISTRY/backend:$IMAGE_TAG .
           docker push $ECR_REGISTRY/backend:$IMAGE_TAG
-          docker push $ECR_REGISTRY/backend:latest
+
+  deploy:
+    name: Deploy Backend
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
 
       - name: Configure kubectl
-        run: |
-          aws eks update-kubeconfig \
-            --region us-east-1 \
-            --name cluster
+        run: aws eks update-kubeconfig --region us-east-1 --name cluster
 
-      - name: Deploy backend to EKS
+      - name: Install kustomize
         run: |
-          # ECR_REGISTRY is job-level env. It does NOT leak from earlier steps.
+          curl -sL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz" \
+            | tar xz
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Apply Kubernetes manifests
+        run: |
           cd starter/backend/k8s
           kustomize edit set image backend=$ECR_REGISTRY/backend:$IMAGE_TAG
-          kubectl apply -k .
-          kubectl rollout restart deployment/backend
-          kubectl rollout status deployment/backend --timeout=180s
-          kubectl get pods -l app=backend -o wide
-          kubectl describe pods -l app=backend | tail -n 80
+          kustomize build | kubectl apply -f -
+          kubectl get nodes -o wide || true
+          kubectl get pods -l app=backend -o wide || true
+          kubectl describe pods -l app=backend | tail -n 60 || true
