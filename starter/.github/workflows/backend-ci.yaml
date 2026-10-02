@@ -21,7 +21,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: starter/backend
-        run: pip install -r requirements.txt
+        run: pip install pipenv && pipenv install --dev --system
 
       - name: Run lint
         working-directory: starter/backend
@@ -41,7 +41,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: starter/backend
-        run: pip install -r requirements.txt
+        run: pip install pipenv && pipenv install --dev --system
 
       - name: Run tests
         working-directory: starter/backend
