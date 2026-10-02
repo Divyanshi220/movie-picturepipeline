@@ -1,10 +1,12 @@
 FROM public.ecr.aws/docker/library/python:3.10-slim
 
 ENV FLASK_RUN_HOST=0.0.0.0
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
     python3-dev \
@@ -14,12 +16,13 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/* \
     && pip install pipenv
 
-RUN mkdir -p /var/www/app
+COPY Pipfile Pipfile.lock /app/
 
-COPY Pipfile* /app/
-
-RUN cd /app && pipenv install --system --deploy
+RUN pipenv install --system --deploy
 
 COPY . /app
 
-CMD ["uwsgi", "--http", "0.0.0.0:5000", "--master", "--enable-threads", "--processes", "2", "--wsgi-file", "/app/app.py", "--callable", "app"]
+EXPOSE 5000
+
+# Flask app lives on the package (`__init__.py`)
+CMD ["uwsgi", "--http", "0.0.0.0:5000", "--master", "--enable-threads", "--processes", "2", "--module", "__init__:app"]

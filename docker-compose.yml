@@ -1,0 +1,24 @@
+services:
+  backend:
+    build:
+      context: ./starter/backend
+    image: movie-picture-backend:local
+    ports:
+      - "5000:5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/movies')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  frontend:
+    build:
+      context: ./starter/frontend
+      args:
+        REACT_APP_MOVIE_API_URL: http://localhost:5000
+    image: movie-picture-frontend:local
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy

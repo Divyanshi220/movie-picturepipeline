@@ -1,1 +1,14 @@
 aws-temp-credentials
+starter/frontend/node_modules/
+starter/frontend/build/
+starter/backend/.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.pipenv/
+setup/terraform/.terraform/
+setup/terraform/terraform.tfstate
+setup/terraform/terraform.tfstate.backup
+setup/terraform/*.tfvars
+.env
+.cursor/

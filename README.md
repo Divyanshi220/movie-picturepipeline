@@ -1,5 +1,59 @@
 # Movie Picture Pipeline
 
+Isolated copy of [Divyanshi220/movie-picturepipeline](https://github.com/Divyanshi220/movie-picturepipeline). This workspace is not mixed with other Cursor projects.
+
+## Why `Build and Deploy Backend` failed
+
+GitHub Actions run: image **build and ECR push succeeded**. Failure is only at:
+
+```text
+kubectl apply -k starter/backend/k8s
+service/backend unchanged
+deployment.apps/backend configured
+deployment.apps/backend image updated
+error: deployment "backend" exceeded its progress deadline
+```
+
+That message means the new ReplicaSet never became Ready. Two bugs in this repo explain it:
+
+1. **Empty `ECR_REGISTRY` on the deploy step.** The CD workflow set `ECR_REGISTRY` only on build/push. GitHub Actions does not pass `env` between steps. `kubectl set image` then targeted `/backend:<sha>` (leading slash, no account/registry). The cluster cannot pull that image, so pods stay `ImagePullBackOff` / `ErrImagePull`. If a previous rollout already missed the deadline, `kubectl rollout status` fails in a few seconds instead of waiting 10 minutes.
+2. **Broken container entrypoint.** `starter/backend/Dockerfile` started uWSGI with `--wsgi-file /app/app.py`, but there is no `app.py`. The Flask app is `app` in `__init__.py`. Even a correctly tagged image would `CrashLoopBackOff`.
+
+Fixes in this copy:
+
+- Job-level `ECR_REGISTRY` / `IMAGE_TAG` on backend and frontend CD
+- `kustomize edit set image` before `kubectl apply -k`
+- uWSGI `--module __init__:app`
+- Readiness/liveness probes and a 180s progress deadline so the next failure prints real pod events instead of a silent timeout
+
+Push these workflow/Dockerfile changes to `github.com/Divyanshi220/movie-picturepipeline` (this environment cannot SSH to GitHub). Then on the cluster, if a rollout is already stuck:
+
+```bash
+kubectl rollout undo deployment/backend || true
+kubectl delete pods -l app=backend --force --grace-period=0
+```
+
+Re-run **Backend Continuous Deployment**.
+
+## Local run (no AWS)
+
+```bash
+./scripts/install.sh
+./scripts/start.sh
+# API:  http://localhost:5000/movies
+# UI:   http://localhost:3000
+```
+
+Or with Docker:
+
+```bash
+docker compose up --build
+```
+
+AWS/EKS deploy still needs the class Cloud Gateway credentials as GitHub secrets (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_ACCOUNT_ID`). They are not required to run or test locally.
+
+---
+
 You've been brought on as the DevOps resource for a development team that manages a web application that is a catalog of Movie Picture movies. They're in dire need of automating their development workflows in hopes of accelerating their release cycle. They'd like to use Github Actions to automate testing, building and deploying their applications to an existing Kubernetes cluster.
 
 The team's project is comprised of 2 application.

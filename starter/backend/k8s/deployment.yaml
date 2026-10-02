@@ -6,6 +6,7 @@ metadata:
     app: backend
 spec:
   replicas: 1
+  progressDeadlineSeconds: 180
   selector:
     matchLabels:
       app: backend
@@ -17,5 +18,19 @@ spec:
       containers:
         - name: backend
           image: backend
+          imagePullPolicy: Always
           ports:
             - containerPort: 5000
+          readinessProbe:
+            httpGet:
+              path: /movies
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /movies
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 10
