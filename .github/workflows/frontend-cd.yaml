@@ -144,6 +144,11 @@ jobs:
       - name: Configure kubectl
         run: aws eks update-kubeconfig --region us-east-1 --name cluster
 
+      - name: Ensure EKS worker nodes are Ready
+        run: |
+          chmod +x scripts/ensure-eks-nodes.sh
+          bash scripts/ensure-eks-nodes.sh
+
       - name: Install kustomize
         run: |
           curl -sL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz" \
@@ -159,11 +164,16 @@ jobs:
       - name: Wait for rollout and publish LoadBalancer URL
         run: |
           set -euo pipefail
+          echo "== nodes =="
           kubectl get nodes -o wide
-          kubectl rollout status deployment/frontend --timeout=300s
+
+          kubectl delete pods -l app=frontend --force --grace-period=0 2>/dev/null || true
+          kubectl rollout restart deployment/frontend
+          kubectl rollout status deployment/frontend --timeout=600s
+
           echo "Waiting for frontend LoadBalancer hostname..."
           FRONTEND_HOST=""
-          for _ in $(seq 1 60); do
+          for _ in $(seq 1 72); do
             FRONTEND_HOST=$(kubectl get svc frontend -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
             if [ -z "$FRONTEND_HOST" ]; then
               FRONTEND_HOST=$(kubectl get svc frontend -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
@@ -175,9 +185,9 @@ jobs:
           done
           if [ -z "$FRONTEND_HOST" ]; then
             echo "ERROR: frontend LoadBalancer address was not assigned"
-            kubectl get svc frontend -o wide
-            kubectl describe svc frontend
-            kubectl get pods -l app=frontend -o wide
+            kubectl get svc frontend -o wide || true
+            kubectl describe svc frontend || true
+            kubectl get pods -l app=frontend -o wide || true
             exit 1
           fi
           FRONTEND_URL="http://${FRONTEND_HOST}"
@@ -188,6 +198,9 @@ jobs:
           BACKEND_URL="http://${BACKEND_HOST}"
           echo "FRONTEND_URL=${FRONTEND_URL}" >> "$GITHUB_ENV"
           echo "BACKEND_URL=${BACKEND_URL}" >> "$GITHUB_ENV"
+          echo "::notice title=Frontend LoadBalancer URL::${FRONTEND_URL}"
+          echo "::notice title=Backend LoadBalancer URL::${BACKEND_URL}"
+          echo "::notice title=Backend movies API::${BACKEND_URL}/movies"
           {
             echo "## Microservice access proof"
             echo ""
@@ -209,3 +222,5 @@ jobs:
           curl -sf "${BACKEND_URL}/movies"
           echo
           echo "Both services are reachable via LoadBalancer DNS"
+          echo "::notice title=Public Frontend URL::${FRONTEND_URL}"
+          echo "::notice title=Public Backend URL::${BACKEND_URL}"
