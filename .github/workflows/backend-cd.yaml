@@ -118,18 +118,37 @@ jobs:
       - name: Wait for rollout and publish LoadBalancer URL
         run: |
           set -euo pipefail
+          dump_diag() {
+            {
+              echo "## Backend deploy diagnostics"
+              echo '```'
+              kubectl get nodes -o wide || true
+              kubectl get svc backend -o wide || true
+              kubectl get pods -l app=backend -o wide || true
+              kubectl describe deployment backend | tail -n 80 || true
+              kubectl describe pods -l app=backend | tail -n 120 || true
+              kubectl logs -l app=backend --tail=80 || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+          trap dump_diag ERR
+
           echo "== nodes =="
           kubectl get nodes -o wide
-          NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')
+          NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | grep -c . || true)
           if [ "${NODE_COUNT}" = "0" ]; then
             echo "ERROR: EKS has no worker nodes. In your AWS lab session, recreate the node group, then re-run Backend CD."
+            dump_diag
             exit 1
           fi
 
-          # Clear a previously failed progress deadline so the new image can roll out.
           kubectl delete pods -l app=backend --force --grace-period=0 2>/dev/null || true
           kubectl rollout restart deployment/backend
-          kubectl rollout status deployment/backend --timeout=600s
+          if ! kubectl rollout status deployment/backend --timeout=600s; then
+            echo "ERROR: backend rollout did not become Ready"
+            dump_diag
+            exit 1
+          fi
 
           echo "Waiting for backend LoadBalancer hostname..."
           BACKEND_HOST=""
@@ -145,10 +164,7 @@ jobs:
           done
           if [ -z "$BACKEND_HOST" ]; then
             echo "ERROR: backend LoadBalancer address was not assigned"
-            kubectl get svc backend -o wide || true
-            kubectl describe svc backend || true
-            kubectl get pods -l app=backend -o wide || true
-            kubectl describe pods -l app=backend | tail -n 100 || true
+            dump_diag
             exit 1
           fi
           BACKEND_URL="http://${BACKEND_HOST}"
@@ -159,8 +175,7 @@ jobs:
             echo "- LoadBalancer: \`${BACKEND_URL}\`"
             echo "- Movies API: \`${BACKEND_URL}/movies\`"
             echo ""
-            echo "Optional: set GitHub secret \`REACT_APP_MOVIE_API_URL\` to \`${BACKEND_URL}\`."
-            echo "Frontend CD can also discover this URL from the cluster automatically."
+            echo "No GitHub secret needed for Frontend CD — it discovers this backend URL from the cluster."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Backend URL: ${BACKEND_URL}"
           kubectl get svc backend -o wide

@@ -22,7 +22,9 @@ RUN pipenv install --system --deploy
 
 COPY . /app
 
+# Explicit WSGI module so uWSGI does not depend on importing __init__ by name.
+RUN printf 'from __init__ import app\n' > /app/wsgi.py
+
 EXPOSE 5000
 
-# Flask app lives on the package (`__init__.py`)
-CMD ["uwsgi", "--http", "0.0.0.0:5000", "--master", "--enable-threads", "--processes", "2", "--module", "__init__:app"]
+CMD ["uwsgi", "--http", "0.0.0.0:5000", "--master", "--enable-threads", "--processes", "2", "--wsgi-file", "/app/wsgi.py", "--callable", "app", "--http-timeout", "60"]
