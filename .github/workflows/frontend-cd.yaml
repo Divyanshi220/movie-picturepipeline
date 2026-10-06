@@ -13,7 +13,6 @@ env:
   AWS_REGION: us-east-1
   ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
   IMAGE_TAG: ${{ github.sha }}
-  REACT_APP_MOVIE_API_URL: ${{ secrets.REACT_APP_MOVIE_API_URL || 'http://localhost:5000' }}
 
 jobs:
   lint:
@@ -68,6 +67,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18.14.2
+          cache: npm
+          cache-dependency-path: starter/frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: starter/frontend
+        run: npm ci
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -79,8 +89,34 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --region us-east-1 --name cluster
+
+      - name: Resolve backend API URL for build-arg
+        id: backend_url
+        run: |
+          set -euo pipefail
+          SECRET_URL="${{ secrets.REACT_APP_MOVIE_API_URL }}"
+          BACKEND_HOST=$(kubectl get svc backend -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+          if [ -z "$BACKEND_HOST" ]; then
+            BACKEND_HOST=$(kubectl get svc backend -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+          fi
+          if [ -n "$SECRET_URL" ]; then
+            API_URL="$SECRET_URL"
+          elif [ -n "$BACKEND_HOST" ]; then
+            API_URL="http://${BACKEND_HOST}"
+          else
+            echo "ERROR: Set secret REACT_APP_MOVIE_API_URL to the backend LoadBalancer URL, or deploy Backend CD first."
+            kubectl get svc backend -o wide || true
+            exit 1
+          fi
+          echo "Using REACT_APP_MOVIE_API_URL=${API_URL}"
+          echo "url=${API_URL}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker image
         working-directory: starter/frontend
+        env:
+          REACT_APP_MOVIE_API_URL: ${{ steps.backend_url.outputs.url }}
         run: |
           docker build \
             --build-arg REACT_APP_MOVIE_API_URL="$REACT_APP_MOVIE_API_URL" \
@@ -118,6 +154,57 @@ jobs:
           cd starter/frontend/k8s
           kustomize edit set image frontend=$ECR_REGISTRY/frontend:$IMAGE_TAG
           kustomize build | kubectl apply -f -
-          kubectl get nodes -o wide || true
-          kubectl get pods -l app=frontend -o wide || true
-          kubectl describe pods -l app=frontend | tail -n 60 || true
+
+      - name: Wait for rollout and publish LoadBalancer URL
+        run: |
+          set -euo pipefail
+          kubectl get nodes -o wide
+          kubectl rollout status deployment/frontend --timeout=300s
+          echo "Waiting for frontend LoadBalancer hostname..."
+          FRONTEND_HOST=""
+          for _ in $(seq 1 60); do
+            FRONTEND_HOST=$(kubectl get svc frontend -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            if [ -z "$FRONTEND_HOST" ]; then
+              FRONTEND_HOST=$(kubectl get svc frontend -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+            fi
+            if [ -n "$FRONTEND_HOST" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$FRONTEND_HOST" ]; then
+            echo "ERROR: frontend LoadBalancer address was not assigned"
+            kubectl get svc frontend -o wide
+            kubectl describe svc frontend
+            kubectl get pods -l app=frontend -o wide
+            exit 1
+          fi
+          FRONTEND_URL="http://${FRONTEND_HOST}"
+          BACKEND_HOST=$(kubectl get svc backend -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+          if [ -z "$BACKEND_HOST" ]; then
+            BACKEND_HOST=$(kubectl get svc backend -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+          fi
+          BACKEND_URL="http://${BACKEND_HOST}"
+          echo "FRONTEND_URL=${FRONTEND_URL}" >> "$GITHUB_ENV"
+          echo "BACKEND_URL=${BACKEND_URL}" >> "$GITHUB_ENV"
+          {
+            echo "## Microservice access proof"
+            echo ""
+            echo "- Frontend LoadBalancer: \`${FRONTEND_URL}\`"
+            echo "- Backend LoadBalancer: \`${BACKEND_URL}\`"
+            echo "- Backend movies API: \`${BACKEND_URL}/movies\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Frontend URL: ${FRONTEND_URL}"
+          echo "Backend URL: ${BACKEND_URL}"
+          kubectl get svc frontend backend -o wide
+          kubectl get pods -l 'app in (frontend,backend)' -o wide
+
+      - name: Verify frontend and backend URLs
+        run: |
+          set -euo pipefail
+          echo "Curling frontend ${FRONTEND_URL}"
+          curl -sfI "${FRONTEND_URL}" | head -n 20
+          echo "Curling backend ${BACKEND_URL}/movies"
+          curl -sf "${BACKEND_URL}/movies"
+          echo
+          echo "Both services are reachable via LoadBalancer DNS"

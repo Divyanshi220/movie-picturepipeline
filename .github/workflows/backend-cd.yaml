@@ -114,6 +114,57 @@ jobs:
           cd starter/backend/k8s
           kustomize edit set image backend=$ECR_REGISTRY/backend:$IMAGE_TAG
           kustomize build | kubectl apply -f -
-          kubectl get nodes -o wide || true
-          kubectl get pods -l app=backend -o wide || true
-          kubectl describe pods -l app=backend | tail -n 60 || true
+
+      - name: Wait for rollout and publish LoadBalancer URL
+        run: |
+          set -euo pipefail
+          kubectl get nodes -o wide
+          kubectl rollout status deployment/backend --timeout=300s
+          echo "Waiting for backend LoadBalancer hostname..."
+          BACKEND_HOST=""
+          for _ in $(seq 1 60); do
+            BACKEND_HOST=$(kubectl get svc backend -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            if [ -z "$BACKEND_HOST" ]; then
+              BACKEND_HOST=$(kubectl get svc backend -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+            fi
+            if [ -n "$BACKEND_HOST" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$BACKEND_HOST" ]; then
+            echo "ERROR: backend LoadBalancer address was not assigned"
+            kubectl get svc backend -o wide
+            kubectl describe svc backend
+            kubectl get pods -l app=backend -o wide
+            exit 1
+          fi
+          BACKEND_URL="http://${BACKEND_HOST}"
+          echo "BACKEND_URL=${BACKEND_URL}" >> "$GITHUB_ENV"
+          {
+            echo "## Backend service URL"
+            echo ""
+            echo "- LoadBalancer: \`${BACKEND_URL}\`"
+            echo "- Movies API: \`${BACKEND_URL}/movies\`"
+            echo ""
+            echo "Set GitHub secret \`REACT_APP_MOVIE_API_URL\` to \`${BACKEND_URL}\` before Frontend CD if it is not already set."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Backend URL: ${BACKEND_URL}"
+          kubectl get svc backend -o wide
+          kubectl get pods -l app=backend -o wide
+
+      - name: Verify backend API
+        run: |
+          set -euo pipefail
+          echo "Curling ${BACKEND_URL}/movies"
+          for _ in $(seq 1 30); do
+            if curl -sf "${BACKEND_URL}/movies"; then
+              echo
+              echo "Backend API is reachable"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "ERROR: backend API did not respond"
+          kubectl describe pods -l app=backend | tail -n 80
+          exit 1
