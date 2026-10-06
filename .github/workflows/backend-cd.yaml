@@ -182,6 +182,8 @@ jobs:
           fi
           BACKEND_URL="http://${BACKEND_HOST}"
           echo "BACKEND_URL=${BACKEND_URL}" >> "$GITHUB_ENV"
+          echo "::notice title=Backend LoadBalancer URL::${BACKEND_URL}"
+          echo "::notice title=Backend movies API::${BACKEND_URL}/movies"
           {
             echo "## Backend service URL"
             echo ""
@@ -197,15 +199,35 @@ jobs:
       - name: Verify backend API
         run: |
           set -euo pipefail
-          echo "Curling ${BACKEND_URL}/movies"
-          for _ in $(seq 1 36); do
-            if curl -sf "${BACKEND_URL}/movies"; then
-              echo
-              echo "Backend API is reachable"
+          echo "Backend URL from deploy: ${BACKEND_URL}"
+          echo "::notice title=Verifying::${BACKEND_URL}/movies"
+
+          echo "== In-cluster check via ClusterIP =="
+          CLUSTER_OK=0
+          if kubectl run backend-curl --rm -i --restart=Never --image=curlimages/curl:8.5.0 --command -- \
+              curl -sf --max-time 10 "http://backend.default.svc.cluster.local/movies"; then
+            echo
+            echo "In-cluster /movies OK"
+            CLUSTER_OK=1
+          else
+            echo "In-cluster /movies FAILED"
+            kubectl logs -l app=backend --tail=80 || true
+          fi
+
+          echo "== Public LoadBalancer check =="
+          for _ in $(seq 1 48); do
+            if BODY=$(curl -sf --max-time 10 "${BACKEND_URL}/movies"); then
+              echo "$BODY"
+              echo "Public backend API is reachable at ${BACKEND_URL}/movies"
+              echo "::notice title=Public Backend URL::${BACKEND_URL}"
               exit 0
             fi
+            echo "waiting for public LB... ($(date -u +%H:%M:%S))"
             sleep 5
           done
-          echo "ERROR: backend API did not respond"
-          kubectl describe pods -l app=backend | tail -n 80
+
+          echo "::error title=Public LB curl failed::${BACKEND_URL}/movies (in-cluster_ok=${CLUSTER_OK})"
+          echo "::error title=backend-logs::$(kubectl logs -l app=backend --tail=80 2>&1 | tr '\n' ' | ' | head -c 2000)"
+          kubectl get svc backend -o wide || true
+          kubectl describe svc backend | tail -n 40 || true
           exit 1
