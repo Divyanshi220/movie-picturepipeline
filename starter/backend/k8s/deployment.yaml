@@ -6,7 +6,7 @@ metadata:
     app: backend
 spec:
   replicas: 1
-  progressDeadlineSeconds: 180
+  progressDeadlineSeconds: 600
   selector:
     matchLabels:
       app: backend
@@ -25,12 +25,13 @@ spec:
             httpGet:
               path: /movies
               port: 5000
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
             periodSeconds: 5
-            failureThreshold: 6
+            failureThreshold: 12
           livenessProbe:
             httpGet:
               path: /movies
               port: 5000
-            initialDelaySeconds: 15
+            initialDelaySeconds: 30
             periodSeconds: 10
+            failureThreshold: 6

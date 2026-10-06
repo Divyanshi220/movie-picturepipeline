@@ -101,12 +101,13 @@ jobs:
           if [ -z "$BACKEND_HOST" ]; then
             BACKEND_HOST=$(kubectl get svc backend -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
           fi
-          if [ -n "$SECRET_URL" ]; then
+          if [ -n "${SECRET_URL}" ]; then
             API_URL="$SECRET_URL"
           elif [ -n "$BACKEND_HOST" ]; then
             API_URL="http://${BACKEND_HOST}"
           else
-            echo "ERROR: Set secret REACT_APP_MOVIE_API_URL to the backend LoadBalancer URL, or deploy Backend CD first."
+            echo "ERROR: Backend LoadBalancer not found."
+            echo "Run Backend CD successfully first, or set optional secret REACT_APP_MOVIE_API_URL."
             kubectl get svc backend -o wide || true
             exit 1
           fi
