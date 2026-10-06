@@ -103,6 +103,11 @@ jobs:
       - name: Configure kubectl
         run: aws eks update-kubeconfig --region us-east-1 --name cluster
 
+      - name: Ensure EKS worker nodes are Ready
+        run: |
+          chmod +x scripts/ensure-eks-nodes.sh
+          bash scripts/ensure-eks-nodes.sh
+
       - name: Install kustomize
         run: |
           curl -sL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz" \
