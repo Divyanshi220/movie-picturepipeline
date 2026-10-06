@@ -124,17 +124,25 @@ jobs:
         run: |
           set -euo pipefail
           dump_diag() {
+            NODES=$(kubectl get nodes -o wide 2>&1 || true)
+            PODS=$(kubectl get pods -l app=backend -o wide 2>&1 || true)
+            DESC=$(kubectl describe pods -l app=backend 2>&1 | tail -n 120 || true)
+            LOGS=$(kubectl logs -l app=backend --tail=100 2>&1 || true)
+            EVENTS=$(kubectl get events --field-selector involvedObject.kind=Pod --sort-by='.lastTimestamp' 2>&1 | tail -n 40 || true)
             {
               echo "## Backend deploy diagnostics"
               echo '```'
-              kubectl get nodes -o wide || true
-              kubectl get svc backend -o wide || true
-              kubectl get pods -l app=backend -o wide || true
-              kubectl describe deployment backend | tail -n 80 || true
-              kubectl describe pods -l app=backend | tail -n 120 || true
-              kubectl logs -l app=backend --tail=80 || true
+              echo "$NODES"
+              echo "$PODS"
+              echo "$DESC"
+              echo "$LOGS"
+              echo "$EVENTS"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            # Surface into check-run annotations (readable without private log download).
+            echo "::error title=backend-pods::$(echo "$PODS" | tr '\n' ' | ' | head -c 2000)"
+            echo "::error title=backend-logs::$(echo "$LOGS" | tr '\n' ' | ' | head -c 2000)"
+            echo "::error title=backend-events::$(echo "$EVENTS" | tr '\n' ' | ' | head -c 2000)"
           }
           trap dump_diag ERR
 
@@ -142,7 +150,7 @@ jobs:
           kubectl get nodes -o wide
           NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | grep -c . || true)
           if [ "${NODE_COUNT}" = "0" ]; then
-            echo "ERROR: EKS has no worker nodes. In your AWS lab session, recreate the node group, then re-run Backend CD."
+            echo "ERROR: EKS has no worker nodes."
             dump_diag
             exit 1
           fi

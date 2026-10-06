@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpcre2-dev \
     libssl-dev \
     libffi-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/* \
     && pip install pipenv
 
@@ -22,9 +23,18 @@ RUN pipenv install --system --deploy
 
 COPY . /app
 
-# Explicit WSGI module so uWSGI does not depend on importing __init__ by name.
-RUN printf 'from __init__ import app\n' > /app/wsgi.py
+# Stable import path for uWSGI (do not import a module named __init__).
+RUN printf '%s\n' \
+  'import importlib.util' \
+  'spec = importlib.util.spec_from_file_location("movie_backend", "/app/__init__.py")' \
+  'module = importlib.util.module_from_spec(spec)' \
+  'spec.loader.exec_module(module)' \
+  'app = module.app' \
+  > /app/wsgi.py
 
 EXPOSE 5000
 
-CMD ["uwsgi", "--http", "0.0.0.0:5000", "--master", "--enable-threads", "--processes", "2", "--wsgi-file", "/app/wsgi.py", "--callable", "app", "--http-timeout", "60"]
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=5 \
+  CMD curl -sf http://127.0.0.1:5000/movies || exit 1
+
+CMD ["uwsgi", "--http", "0.0.0.0:5000", "--master", "--enable-threads", "--processes", "2", "--wsgi-file", "/app/wsgi.py", "--callable", "app", "--http-timeout", "60", "--die-on-term"]
